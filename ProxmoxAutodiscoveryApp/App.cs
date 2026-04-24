@@ -25,300 +25,299 @@ using DnsServerCore.ApplicationCommon;
 using TechnitiumLibrary.Net.Dns;
 using TechnitiumLibrary.Net.Dns.ResourceRecords;
 
-namespace ProxmoxAutodiscovery
+namespace ProxmoxAutodiscovery;
+
+public sealed class App : IDnsApplication, IDnsAppRecordRequestHandler
 {
-    public sealed class App : IDnsApplication, IDnsAppRecordRequestHandler
+    #region variables
+        
+    private IDnsServer _dnsServer;
+        
+    private PveService _pveService;
+    private IReadOnlyDictionary<string, DiscoveredGuest> _autodiscoveryData = new Dictionary<string, DiscoveredGuest>(StringComparer.OrdinalIgnoreCase);
+        
+    private CancellationTokenSource _cts = new();
+    private Task _backgroundUpdateLoopTask = Task.CompletedTask;
+
+    #endregion
+        
+    #region IDisposable
+        
+    public void Dispose()
     {
-        #region variables
-        
-        private IDnsServer _dnsServer;
-        
-        private PveService _pveService;
-        private IReadOnlyDictionary<string, DiscoveredGuest> _autodiscoveryData = new Dictionary<string, DiscoveredGuest>(StringComparer.OrdinalIgnoreCase);
-        
-        private CancellationTokenSource _cts = new();
-        private Task _backgroundUpdateLoopTask = Task.CompletedTask;
-
-        #endregion
-        
-        #region IDisposable
-        
-        public void Dispose()
+        if (_cts is { IsCancellationRequested: false } && _backgroundUpdateLoopTask is { IsCompleted: false })
         {
-            if (_cts is { IsCancellationRequested: false } && _backgroundUpdateLoopTask is { IsCompleted: false })
-            {
-                _cts.Cancel();
-                _backgroundUpdateLoopTask?.GetAwaiter().GetResult();
-                _cts.Dispose();
-            }
+            _cts.Cancel();
+            _backgroundUpdateLoopTask?.GetAwaiter().GetResult();
+            _cts.Dispose();
         }
+    }
         
-        #endregion
+    #endregion
 
-        #region public
+    #region public
         
-        public async Task InitializeAsync(IDnsServer dnsServer, string config)
+    public async Task InitializeAsync(IDnsServer dnsServer, string config)
+    {
+        _dnsServer = dnsServer;
+            
+        var appConfig = DeserializationHelper.Deserialize<AppConfig>(config);
+
+        _pveService = new PveService(
+            appConfig.ProxmoxHost,
+            appConfig.AccessToken,
+            appConfig.DisableSslValidation,
+            TimeSpan.FromSeconds(appConfig.TimeoutSeconds),
+            _dnsServer.Proxy
+        );
+
+        if (_cts is { IsCancellationRequested: false } && _backgroundUpdateLoopTask is { IsCompleted: false })
         {
-            _dnsServer = dnsServer;
+            await _cts.CancelAsync();
+            await _backgroundUpdateLoopTask;
+            _cts.Dispose();
+        }
             
-            var appConfig = DeserializationHelper.Deserialize<AppConfig>(config);
-
-            _pveService = new PveService(
-                appConfig.ProxmoxHost,
-                appConfig.AccessToken,
-                appConfig.DisableSslValidation,
-                TimeSpan.FromSeconds(appConfig.TimeoutSeconds),
-                _dnsServer.Proxy
-            );
-
-            if (_cts is { IsCancellationRequested: false } && _backgroundUpdateLoopTask is { IsCompleted: false })
+        if (appConfig.Enabled)
+        {
+            try
             {
-                await _cts.CancelAsync();
-                await _backgroundUpdateLoopTask;
-                _cts.Dispose();
+                _autodiscoveryData = await _pveService.DiscoverGuestsAsync(CancellationToken.None);
+                _dnsServer.WriteLog("Successfully initialized autodiscovery cache.");
             }
+            catch (Exception ex)
+            {
+                _dnsServer.WriteLog("Error while initializing autodiscovery cache.");
+                _dnsServer.WriteLog(ex);
+            }
+                
+            _cts = new CancellationTokenSource();
+            _backgroundUpdateLoopTask = BackgroundUpdateLoop(TimeSpan.FromSeconds(appConfig.UpdateIntervalSeconds));
+        }
+    }
+
+    public Task<DnsDatagram> ProcessRequestAsync(
+        DnsDatagram request,
+        IPEndPoint remoteEP,
+        DnsTransportProtocol protocol,
+        bool isRecursionAllowed,
+        string zoneName,
+        string appRecordName,
+        uint appRecordTtl,
+        string appRecordData)
+    {
+        var question = request.Question[0];
+
+        if (question is not { Type: DnsResourceRecordType.A or DnsResourceRecordType.AAAA })
+            return Task.FromResult<DnsDatagram>(null);
+
+        if (!TryGetHostname(question.Name, appRecordName, out var hostname))
+            return Task.FromResult<DnsDatagram>(null);
+
+        if (!_autodiscoveryData.TryGetValue(hostname, out var vm))
+            return Task.FromResult<DnsDatagram>(null);
             
-            if (appConfig.Enabled)
+        var recordConfig = DeserializationHelper.Deserialize<AppRecordConfig>(appRecordData);
+            
+        if (!IsVmMatchFilters(vm, recordConfig.Type, recordConfig.Tags))
+            return Task.FromResult<DnsDatagram>(null);
+            
+        var isIpv6 = question.Type == DnsResourceRecordType.AAAA;
+
+        var answer = GetMatchingIps(
+                vm.Addresses,
+                recordConfig.Networks,
+                isIpv6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork)
+            .Select(x => new DnsResourceRecord(
+                question.Name,
+                question.Type,
+                DnsClass.IN,
+                appRecordTtl,
+                isIpv6
+                    ? new DnsAAAARecordData(x)
+                    : new DnsARecordData(x)
+            )).ToList();
+            
+        var data = new DnsDatagram(
+            request.Identifier,
+            true,
+            request.OPCODE,
+            true,
+            false,
+            request.RecursionDesired,
+            isRecursionAllowed,
+            false,
+            false,
+            DnsResponseCode.NoError,
+            request.Question,
+            answer: answer);
+
+        return Task.FromResult(data);
+    }
+
+    #endregion
+
+    #region private
+
+    private async Task BackgroundUpdateLoop(TimeSpan updateInterval)
+    {
+        _dnsServer.WriteLog("Starting background data update loop.");
+            
+        using var pt = new PeriodicTimer(updateInterval);
+        try
+        {
+            while (await pt.WaitForNextTickAsync(_cts.Token))
             {
                 try
                 {
-                    _autodiscoveryData = await _pveService.DiscoverGuestsAsync(CancellationToken.None);
-                    _dnsServer.WriteLog("Successfully initialized autodiscovery cache.");
+                    _autodiscoveryData = await _pveService.DiscoverGuestsAsync(_cts.Token);
                 }
                 catch (Exception ex)
                 {
-                    _dnsServer.WriteLog("Error while initializing autodiscovery cache.");
+                    _dnsServer.WriteLog("Unexpected error while updating Proxmox data.");
                     _dnsServer.WriteLog(ex);
                 }
-                
-                _cts = new CancellationTokenSource();
-                _backgroundUpdateLoopTask = BackgroundUpdateLoop(TimeSpan.FromSeconds(appConfig.UpdateIntervalSeconds));
             }
         }
-
-        public Task<DnsDatagram> ProcessRequestAsync(
-            DnsDatagram request,
-            IPEndPoint remoteEP,
-            DnsTransportProtocol protocol,
-            bool isRecursionAllowed,
-            string zoneName,
-            string appRecordName,
-            uint appRecordTtl,
-            string appRecordData)
+        catch (OperationCanceledException oce) when (oce.CancellationToken == _cts.Token)
         {
-            var question = request.Question[0];
-
-            if (question is not { Type: DnsResourceRecordType.A or DnsResourceRecordType.AAAA })
-                return Task.FromResult<DnsDatagram>(null);
-
-            if (!TryGetHostname(question.Name, appRecordName, out var hostname))
-                return Task.FromResult<DnsDatagram>(null);
-
-            if (!_autodiscoveryData.TryGetValue(hostname, out var vm))
-                return Task.FromResult<DnsDatagram>(null);
-            
-            var recordConfig = DeserializationHelper.Deserialize<AppRecordConfig>(appRecordData);
-            
-            if (!IsVmMatchFilters(vm, recordConfig.Type, recordConfig.Tags))
-                return Task.FromResult<DnsDatagram>(null);
-            
-            var isIpv6 = question.Type == DnsResourceRecordType.AAAA;
-
-            var answer = GetMatchingIps(
-                    vm.Addresses,
-                    recordConfig.Networks,
-                    isIpv6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork)
-                .Select(x => new DnsResourceRecord(
-                    question.Name,
-                    question.Type,
-                    DnsClass.IN,
-                    appRecordTtl,
-                    isIpv6
-                        ? new DnsAAAARecordData(x)
-                        : new DnsARecordData(x)
-                )).ToList();
-            
-            var data = new DnsDatagram(
-                request.Identifier,
-                true,
-                request.OPCODE,
-                true,
-                false,
-                request.RecursionDesired,
-                isRecursionAllowed,
-                false,
-                false,
-                DnsResponseCode.NoError,
-                request.Question,
-                answer: answer);
-
-            return Task.FromResult(data);
+            // To simplify calling code, on cancellation we're just completing the task and exiting the loop
         }
-
-        #endregion
-
-        #region private
-
-        private async Task BackgroundUpdateLoop(TimeSpan updateInterval)
-        {
-            _dnsServer.WriteLog("Starting background data update loop.");
+    }
+        
+    private static bool TryGetHostname(string qname, string appRecordName, out string hostname)
+    {
+        hostname = null;
             
-            using var pt = new PeriodicTimer(updateInterval);
-            try
-            {
-                while (await pt.WaitForNextTickAsync(_cts.Token))
-                {
-                    try
+        var query = qname.ToLowerInvariant();
+
+        if (query.Length <= appRecordName.Length)
+            return false;
+
+        if (!query.EndsWith(appRecordName))
+            return false;
+
+        // if appRecordName is `domain.com` we expect query to be `hostname.domain.com`
+        // we already know that query ends with appRecordName, now we need to check that query ends with dot-appRecordName
+        if (query[^(appRecordName.Length + 1)] != '.')
+            return false;
+            
+        hostname = qname.Substring(0, qname.Length - appRecordName.Length - 1);
+        return true;
+    }
+        
+    private static bool IsVmMatchFilters(DiscoveredGuest network, string type, Filter<string> tagFilter)
+    {
+        // If type is specified, and it's not matching VM type - do not discover this host
+        if (type != null && network.Type != type)
+            return false;
+            
+        // If allowed tags are specified, VM must have all tags in the list to be discovered
+        if (tagFilter.Allowed.Length > 0 && !tagFilter.Allowed.All(x => network.Tags.Contains(x)))
+            return false;
+            
+        // If excluded tags are specified, VM must have no tags from the list to be discovered
+        if (tagFilter.Excluded.Length > 0 && tagFilter.Excluded.Any(x => network.Tags.Contains(x)))
+            return false;
+
+        return true;
+    }
+
+    private static IEnumerable<IPAddress> GetMatchingIps(
+        IPAddress[] vmAddresses,
+        Filter<IPNetwork> networkFilter,
+        AddressFamily addressFamily)
+    {
+        return vmAddresses
+            // Picking only IPv4 or IPv6 addresses
+            .Where(x => x.AddressFamily == addressFamily)
+            // IP address must be in one of the allowed networks
+            .Where(ip => networkFilter.Allowed.Any(net => net.Contains(ip)))
+            // IP address must be in none of the blocked networks
+            .Where(ip => networkFilter.Excluded.All(net => !net.Contains(ip)));
+    }
+
+    #endregion
+        
+    #region properties
+
+    public string Description
+    { get { return "Allows configuring autodiscovery for Proxmox QEMUs and LXCs based on a set of filters."; } }
+        
+    public string ApplicationRecordDataTemplate
+    { get { return  """
                     {
-                        _autodiscoveryData = await _pveService.DiscoverGuestsAsync(_cts.Token);
+                      "type": "qemu",
+                      "tags": {
+                        "allowed": [
+                          "autodiscovery"
+                        ],
+                        "excluded": [
+                          "hidden"
+                        ]
+                      },
+                      "networks": {
+                        "allowed": [
+                          "10.0.0.0/8",
+                          "172.16.0.0/12",
+                          "192.168.0.0/16",
+                          "fc00::/7"
+                        ],
+                        "excluded": [
+                          "172.17.0.0/16"
+                        ]
+                      }
                     }
-                    catch (Exception ex)
-                    {
-                        _dnsServer.WriteLog("Unexpected error while updating Proxmox data.");
-                        _dnsServer.WriteLog(ex);
-                    }
-                }
-            }
-            catch (OperationCanceledException oce) when (oce.CancellationToken == _cts.Token)
-            {
-                // To simplify calling code, on cancellation we're just completing the task and exiting the loop
-            }
-        }
+                    """; } }
+
+    #endregion
         
-        private static bool TryGetHostname(string qname, string appRecordName, out string hostname)
-        {
-            hostname = null;
-            
-            var query = qname.ToLowerInvariant();
-
-            if (query.Length <= appRecordName.Length)
-                return false;
-
-            if (!query.EndsWith(appRecordName))
-                return false;
-
-            // if appRecordName is `domain.com` we expect query to be `hostname.domain.com`
-            // we already know that query ends with appRecordName, now we need to check that query ends with dot-appRecordName
-            if (query[^(appRecordName.Length + 1)] != '.')
-                return false;
-            
-            hostname = qname.Substring(0, qname.Length - appRecordName.Length - 1);
-            return true;
-        }
-        
-        private static bool IsVmMatchFilters(DiscoveredGuest network, string type, Filter<string> tagFilter)
-        {
-            // If type is specified, and it's not matching VM type - do not discover this host
-            if (type != null && network.Type != type)
-                return false;
-            
-            // If allowed tags are specified, VM must have all tags in the list to be discovered
-            if (tagFilter.Allowed.Length > 0 && !tagFilter.Allowed.All(x => network.Tags.Contains(x)))
-                return false;
-            
-            // If excluded tags are specified, VM must have no tags from the list to be discovered
-            if (tagFilter.Excluded.Length > 0 && tagFilter.Excluded.Any(x => network.Tags.Contains(x)))
-                return false;
-
-            return true;
-        }
-
-        private static IEnumerable<IPAddress> GetMatchingIps(
-            IPAddress[] vmAddresses,
-            Filter<IPNetwork> networkFilter,
-            AddressFamily addressFamily)
-        {
-            return vmAddresses
-                // Picking only IPv4 or IPv6 addresses
-                .Where(x => x.AddressFamily == addressFamily)
-                // IP address must be in one of the allowed networks
-                .Where(ip => networkFilter.Allowed.Any(net => net.Contains(ip)))
-                // IP address must be in none of the blocked networks
-                .Where(ip => networkFilter.Excluded.All(net => !net.Contains(ip)));
-        }
-
-        #endregion
-        
-        #region properties
-
-        public string Description
-            { get { return "Allows configuring autodiscovery for Proxmox QEMUs and LXCs based on a set of filters."; } }
-        
-        public string ApplicationRecordDataTemplate
-            { get { return  """
-                            {
-                              "type": "qemu",
-                              "tags": {
-                                "allowed": [
-                                  "autodiscovery"
-                                ],
-                                "excluded": [
-                                  "hidden"
-                                ]
-                              },
-                              "networks": {
-                                "allowed": [
-                                  "10.0.0.0/8",
-                                  "172.16.0.0/12",
-                                  "192.168.0.0/16",
-                                  "fc00::/7"
-                                ],
-                                "excluded": [
-                                  "172.17.0.0/16"
-                                ]
-                              }
-                            }
-                            """; } }
-
-        #endregion
-        
-        private sealed class AppConfig
-        {
-            [JsonPropertyName("enabled")]
-            public bool Enabled { get; set; }
+    private sealed class AppConfig
+    {
+        [JsonPropertyName("enabled")]
+        public bool Enabled { get; set; }
     
-            [Required]
-            [JsonPropertyName("proxmoxHost")]
-            public Uri ProxmoxHost { get; set; }
+        [Required]
+        [JsonPropertyName("proxmoxHost")]
+        public Uri ProxmoxHost { get; set; }
     
-            [JsonPropertyName("timeoutSeconds")]
-            public int TimeoutSeconds { get; set; } = 15;
+        [JsonPropertyName("timeoutSeconds")]
+        public int TimeoutSeconds { get; set; } = 15;
             
-            [JsonPropertyName("disableSslValidation")]
-            public bool DisableSslValidation { get; set; }
+        [JsonPropertyName("disableSslValidation")]
+        public bool DisableSslValidation { get; set; }
             
-            [Required]
-            [JsonPropertyName("accessToken")]
-            public string AccessToken { get; set; }
+        [Required]
+        [JsonPropertyName("accessToken")]
+        public string AccessToken { get; set; }
     
-            [JsonPropertyName("updateIntervalSeconds")]
-            public int UpdateIntervalSeconds { get; set; } = 60;
-        }
+        [JsonPropertyName("updateIntervalSeconds")]
+        public int UpdateIntervalSeconds { get; set; } = 60;
+    }
         
-        private sealed class AppRecordConfig
-        {
-            [AllowedValues("lxc", "qemu", null)]
-            [JsonPropertyName("type")]
-            public string Type { get; set; }
+    private sealed class AppRecordConfig
+    {
+        [AllowedValues("lxc", "qemu", null)]
+        [JsonPropertyName("type")]
+        public string Type { get; set; }
             
-            [Required]
-            [JsonPropertyName("tags")]
-            public Filter<string> Tags { get; set; }
+        [Required]
+        [JsonPropertyName("tags")]
+        public Filter<string> Tags { get; set; }
             
-            [Required]
-            [JsonPropertyName("networks")]
-            public Filter<IPNetwork> Networks { get; set; }
-        }
+        [Required]
+        [JsonPropertyName("networks")]
+        public Filter<IPNetwork> Networks { get; set; }
+    }
 
-        private sealed class Filter<T>
-        {
-            [Required]
-            [JsonPropertyName("allowed")]
-            public T[] Allowed { get; set; }
+    private sealed class Filter<T>
+    {
+        [Required]
+        [JsonPropertyName("allowed")]
+        public T[] Allowed { get; set; }
             
-            [Required]
-            [JsonPropertyName("excluded")]
-            public T[] Excluded { get; set; }
-        }
+        [Required]
+        [JsonPropertyName("excluded")]
+        public T[] Excluded { get; set; }
     }
 }
