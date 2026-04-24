@@ -1,5 +1,4 @@
 on:
-  workflow_dispatch:
   push:
     tags:
       - v*
@@ -7,12 +6,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
           submodules: true
-      
+          fetch-tags: true
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -26,8 +28,7 @@ jobs:
 
       - name: Build ProxmoxAutodiscoveryApp
         run: |
-          TEST_APP_VERSION=${{ github.ref_name }}
-          APP_VERSION=v0.0.1
+          APP_VERSION=${{ github.ref_name }}
 
           echo APP_VERSION=${APP_VERSION:1}
 
@@ -37,11 +38,18 @@ jobs:
         uses: thedoctor0/zip-release@0.7.5
         with:
           type: zip
-          filename: release.zip
+          filename: ProxmoxAutodiscoveryApp-${{ github.ref_name }}.zip
           directory: release
           exclusions: DnsServerCore*
 
-      - uses: actions/upload-artifact@v4
+      - name: Detect previous tag
+        run: echo "PREVIOUS_TAG=$(git tag -l --sort=-v:refname | head -n 2 | tail -n 1)" | tee -a $GITHUB_ENV
+
+      - name: Create release draft
+        uses: ncipollo/release-action@v1
         with:
-          name: release-archive
-          path: release/release.zip
+          artifactErrorsFailBuild: true
+          artifacts: release/ProxmoxAutodiscoveryApp-${{ github.ref_name }}.zip
+          draft: true
+          generateReleaseNotes: true
+          generateReleaseNotesPreviousTag: ${{ env.PREVIOUS_TAG }}
