@@ -20,7 +20,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 using System.ComponentModel.DataAnnotations;
 using System.Net;
 using System.Net.Sockets;
-using System.Text.Json;
 using System.Text.Json.Serialization;
 using DnsServerCore.ApplicationCommon;
 using TechnitiumLibrary.Net.Dns;
@@ -31,22 +30,14 @@ namespace ProxmoxAutodiscovery
     public sealed class App : IDnsApplication, IDnsAppRecordRequestHandler
     {
         #region variables
-
-        private static readonly JsonSerializerOptions SerializerOptions = new()
-        {
-            Converters =
-            {
-                new IpNetworkConverter()
-            }
-        };
         
         private IDnsServer _dnsServer;
         
         private PveService _pveService;
         private IReadOnlyDictionary<string, DiscoveredVm> _autodiscoveryData = new Dictionary<string, DiscoveredVm>(StringComparer.OrdinalIgnoreCase);
         
-        private CancellationTokenSource _cts;
-        private Task _backgroundUpdateLoopTask;
+        private CancellationTokenSource _cts = new();
+        private Task _backgroundUpdateLoopTask = Task.CompletedTask;
 
         #endregion
         
@@ -70,8 +61,7 @@ namespace ProxmoxAutodiscovery
         {
             _dnsServer = dnsServer;
             
-            var appConfig = JsonSerializer.Deserialize<AppConfig>(config);
-            Validator.ValidateObject(appConfig, new ValidationContext(appConfig), validateAllProperties: true);
+            var appConfig = DeserializationHelper.Deserialize<AppConfig>(config);
 
             _pveService = new PveService(
                 appConfig.ProxmoxHost,
@@ -127,8 +117,7 @@ namespace ProxmoxAutodiscovery
             if (!_autodiscoveryData.TryGetValue(hostname, out var vm))
                 return Task.FromResult<DnsDatagram>(null);
             
-            var recordConfig = JsonSerializer.Deserialize<AppRecordConfig>(appRecordData, SerializerOptions);
-            Validator.ValidateObject(recordConfig, new ValidationContext(recordConfig), validateAllProperties: true);
+            var recordConfig = DeserializationHelper.Deserialize<AppRecordConfig>(appRecordData);
             
             if (!IsVmMatchFilters(vm, recordConfig.Type, recordConfig.Tags))
                 return Task.FromResult<DnsDatagram>(null);
@@ -330,23 +319,6 @@ namespace ProxmoxAutodiscovery
             [Required]
             [JsonPropertyName("excluded")]
             public T[] Excluded { get; set; }
-        }
-        
-        private sealed class IpNetworkConverter : JsonConverter<IPNetwork>
-        {
-            public override IPNetwork Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-            {
-                var str = reader.GetString();
-                if (!string.IsNullOrEmpty(str))
-                    return IPNetwork.Parse(str);
-                
-                return default;
-            }
-
-            public override void Write(Utf8JsonWriter writer, IPNetwork value, JsonSerializerOptions options)
-            {
-                writer.WriteStringValue(value.ToString());
-            }
         }
     }
 }
