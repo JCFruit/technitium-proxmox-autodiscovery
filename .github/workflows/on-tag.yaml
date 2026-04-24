@@ -31,7 +31,7 @@ jobs:
 
           echo APP_VERSION=${APP_VERSION:1}
 
-          dotnet release ProxmoxAutodiscoveryApp/ProxmoxAutodiscoveryApp.csproj --no-restore --configuration Release --output release -p:Version=${APP_VERSION:1}
+          dotnet publish ProxmoxAutodiscoveryApp/ProxmoxAutodiscoveryApp.csproj --no-restore --configuration Release --output release -p:Version=${APP_VERSION:1}
 
       - name: Create artifact archive
         uses: thedoctor0/zip-release@0.7.5
