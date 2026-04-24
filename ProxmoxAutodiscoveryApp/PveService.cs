@@ -28,7 +28,7 @@ internal sealed class PveService
         _client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", $"PVEAPIToken={accessToken}");
     }
 
-    public async Task<IReadOnlyDictionary<string, DiscoveredVm>> DiscoverVmsAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyDictionary<string, DiscoveredGuest>> DiscoverGuestsAsync(CancellationToken cancellationToken)
     {
         var nodes = await GetProxmoxDataAsync<ProxmoxNode[]>("api2/json/nodes", [], cancellationToken);
 
@@ -43,7 +43,7 @@ internal sealed class PveService
                 StringComparer.OrdinalIgnoreCase);
     }
 
-    private async Task<IEnumerable<DiscoveredVm>> GetVmNetworksAsync(string node, CancellationToken cancellationToken)
+    private async Task<IEnumerable<DiscoveredGuest>> GetVmNetworksAsync(string node, CancellationToken cancellationToken)
     {
         var qemus = GetQemuVmNetworksAsync(node, cancellationToken);
         var lxcs = GetLxcVmNetworks(node, cancellationToken);
@@ -52,9 +52,9 @@ internal sealed class PveService
         return result.SelectMany(x => x);
     }
 
-    private async Task<List<DiscoveredVm>> GetQemuVmNetworksAsync(string node, CancellationToken cancellationToken)
+    private async Task<List<DiscoveredGuest>> GetQemuVmNetworksAsync(string node, CancellationToken cancellationToken)
     {
-        var result = new List<DiscoveredVm>();
+        var result = new List<DiscoveredGuest>();
         var qemus = await GetProxmoxDataAsync<VmDescription[]>(
             $"api2/json/nodes/{node}/qemu",
             [],
@@ -89,13 +89,13 @@ internal sealed class PveService
         return result;
     }
 
-    private async Task<List<DiscoveredVm>> GetLxcVmNetworks(string node, CancellationToken cancellationToken)
+    private async Task<List<DiscoveredGuest>> GetLxcVmNetworks(string node, CancellationToken cancellationToken)
     {
         var lxcs = await GetProxmoxDataAsync<VmDescription[]>(
             $"api2/json/nodes/{node}/lxc",
             [],
             cancellationToken);
-        var result = new List<DiscoveredVm>(lxcs.Length);
+        var result = new List<DiscoveredGuest>(lxcs.Length);
         
         foreach (var lxc in lxcs)
         {
@@ -124,9 +124,9 @@ internal sealed class PveService
             : defaultValue;
     }
 
-    private static DiscoveredVm Map(VmDescription vm, VmNetworkInterface[] interfaces)
+    private static DiscoveredGuest Map(VmDescription vm, VmNetworkInterface[] interfaces)
     {
-        return new DiscoveredVm(
+        return new DiscoveredGuest(
             Name: vm.Name,
             Type: vm.Type,
             Tags: vm.Tags?.Split(';') ?? [],
@@ -193,4 +193,4 @@ internal sealed class PveService
     #endregion
 }
 
-public sealed record DiscoveredVm(string Name, string Type, string[] Tags, IPAddress[] Addresses);
+public sealed record DiscoveredGuest(string Name, string Type, string[] Tags, IPAddress[] Addresses);

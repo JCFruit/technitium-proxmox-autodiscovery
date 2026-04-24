@@ -34,7 +34,7 @@ namespace ProxmoxAutodiscovery
         private IDnsServer _dnsServer;
         
         private PveService _pveService;
-        private IReadOnlyDictionary<string, DiscoveredVm> _autodiscoveryData = new Dictionary<string, DiscoveredVm>(StringComparer.OrdinalIgnoreCase);
+        private IReadOnlyDictionary<string, DiscoveredGuest> _autodiscoveryData = new Dictionary<string, DiscoveredGuest>(StringComparer.OrdinalIgnoreCase);
         
         private CancellationTokenSource _cts = new();
         private Task _backgroundUpdateLoopTask = Task.CompletedTask;
@@ -82,7 +82,7 @@ namespace ProxmoxAutodiscovery
             {
                 try
                 {
-                    _autodiscoveryData = await _pveService.DiscoverVmsAsync(CancellationToken.None);
+                    _autodiscoveryData = await _pveService.DiscoverGuestsAsync(CancellationToken.None);
                     _dnsServer.WriteLog("Successfully initialized autodiscovery cache.");
                 }
                 catch (Exception ex)
@@ -170,7 +170,7 @@ namespace ProxmoxAutodiscovery
                 {
                     try
                     {
-                        _autodiscoveryData = await _pveService.DiscoverVmsAsync(_cts.Token);
+                        _autodiscoveryData = await _pveService.DiscoverGuestsAsync(_cts.Token);
                     }
                     catch (Exception ex)
                     {
@@ -206,7 +206,7 @@ namespace ProxmoxAutodiscovery
             return true;
         }
         
-        private static bool IsVmMatchFilters(DiscoveredVm network, string type, Filter<string> tagFilter)
+        private static bool IsVmMatchFilters(DiscoveredGuest network, string type, Filter<string> tagFilter)
         {
             // If type is specified, and it's not matching VM type - do not discover this host
             if (type != null && network.Type != type)
