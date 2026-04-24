@@ -1,0 +1,20 @@
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: [linux, x64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Build dependencies
+        run: |
+          dotnet build ./TechnitiumLibrary/TechnitiumLibrary/ -c Release
+          dotnet build ./TechnitiumLibrary/TechnitiumLibrary.Net/ -c Release
+
+      - name: Build ProxmoxAutodiscoveryApp
+        run: |
+          dotnet build ProxmoxAutodiscoveryApp/ -c Release
