@@ -1,0 +1,22 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ProxmoxAutodiscoveryApp", "ProxmoxAutodiscoveryApp.csproj", "{E9E7C5D3-4F56-454D-9927-ECE9617313FB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DnsServerCore.ApplicationCommon", "..\DnsServer\DnsServerCore.ApplicationCommon\DnsServerCore.ApplicationCommon.csproj", "{55505CAF-79F7-461D-86BC-40B47A2B1D2B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E9E7C5D3-4F56-454D-9927-ECE9617313FB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E9E7C5D3-4F56-454D-9927-ECE9617313FB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E9E7C5D3-4F56-454D-9927-ECE9617313FB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E9E7C5D3-4F56-454D-9927-ECE9617313FB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{55505CAF-79F7-461D-86BC-40B47A2B1D2B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{55505CAF-79F7-461D-86BC-40B47A2B1D2B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{55505CAF-79F7-461D-86BC-40B47A2B1D2B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{55505CAF-79F7-461D-86BC-40B47A2B1D2B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
