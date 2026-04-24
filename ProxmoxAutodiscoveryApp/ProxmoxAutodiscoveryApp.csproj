@@ -6,6 +6,12 @@
         <AssemblyName>ProxmoxAutodiscoveryApp</AssemblyName>
         <RootNamespace>ProxmoxAutodiscovery</RootNamespace>
     </PropertyGroup>
+    
+    <PropertyGroup>
+        <Authors>Gordei Vasiliev</Authors>
+        <RepositoryUrl>https://github.com/JCFruit/technitium-proxmox-autodiscovery</RepositoryUrl>
+        <Description>Allows configuring autodiscovery for Proxmox QEMUs and LXCs based on a set of filters.</Description>
+    </PropertyGroup>
 
     <ItemGroup>
         <ProjectReference Include="..\DnsServer\DnsServerCore.ApplicationCommon\DnsServerCore.ApplicationCommon.csproj" />
